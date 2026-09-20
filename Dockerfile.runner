@@ -1,0 +1,20 @@
+# Image launched fresh, per job, by the multi-tenant platform (src/platform/docker.ts).
+# It clones the target repo, runs the resolver agent, and exits -- see src/run-once.ts.
+#
+# Node-only for now: it can install/test any repo whose dependency manifest is one of
+# package-lock.json/package.json, requirements.txt, Cargo.toml, or go.mod (see
+# src/tools.ts installDependencies), but only Node is preinstalled in this base image.
+# Extend this Dockerfile with python3/pip, a Rust toolchain, or Go if you need to
+# resolve issues in those ecosystems too.
+FROM node:20-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
+RUN npm ci && npm run build
+
+ENV WORKSPACE_DIR=/tmp/workspace
+CMD ["node", "dist/run-once.js"]

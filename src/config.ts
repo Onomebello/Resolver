@@ -1,23 +1,12 @@
-import "dotenv/config";
-
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value || value.trim().length === 0) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
-
-function optional(name: string, fallback: string): string {
-  const value = process.env[name];
-  return value && value.trim().length > 0 ? value : fallback;
-}
+import { optional, required } from "./env.js";
 
 const [defaultOwner, defaultRepo] = optional("GITHUB_REPO", "").split("/");
 
 export const config = {
   githubToken: required("GITHUB_TOKEN"),
-  webhookSecret: required("WEBHOOK_SECRET"),
+  // Only required by the single-tenant webhook server (src/index.ts), which validates
+  // this itself at startup; the run-once runner (src/run-once.ts) never needs it.
+  webhookSecret: optional("WEBHOOK_SECRET", ""),
   anthropicApiKey: required("ANTHROPIC_API_KEY"),
   anthropicModel: optional("ANTHROPIC_MODEL", "claude-sonnet-5"),
   triggerLabel: optional("TRIGGER_LABEL", "ai-resolve"),

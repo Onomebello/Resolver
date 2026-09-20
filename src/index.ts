@@ -9,6 +9,10 @@ interface RequestWithRawBody extends Request {
   rawBody?: Buffer;
 }
 
+if (!config.webhookSecret) {
+  throw new Error("Missing required environment variable: WEBHOOK_SECRET");
+}
+
 const app = express();
 
 app.use(

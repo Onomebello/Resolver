@@ -10,18 +10,29 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test"
+    "test": "tsx --test",
+    "run:once": "tsx src/run-once.ts",
+    "platform:dev": "tsx watch src/platform/server.ts",
+    "platform:migrate": "tsx src/platform/db/migrate.ts",
+    "docker:build:runner": "docker build -f Dockerfile.runner -t resolver-runner:latest ."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
+    "@octokit/app": "^16.1.4",
     "@octokit/rest": "^21.0.2",
+    "cookie": "^2.0.1",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.0",
     "simple-git": "^3.27.0"
   },
   "devDependencies": {
+    "@types/cookie": "^0.6.0",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.9.0",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },

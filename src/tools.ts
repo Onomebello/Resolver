@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { RunTestsResult, ToolResult } from "./types.js";
+import type { ToolResult, RunTestsResult } from "./types.js";
 
 const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", ".workspaces", "build", "coverage"]);
 const MAX_SEARCH_RESULTS = 200;
@@ -163,4 +163,45 @@ export class WorkspaceTools {
       );
     });
   }
+}
+
+const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function runShell(cmd: string, cwd: string, timeoutMs: number): Promise<RunTestsResult> {
+  return new Promise((resolve) => {
+    exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const exitCode = error ? (typeof error.code === "number" ? error.code : 1) : 0;
+      resolve({
+        success: exitCode === 0,
+        exitCode,
+        stdout: stdout?.toString() ?? "",
+        stderr: stderr?.toString() ?? "",
+      });
+    });
+  });
+}
+
+/**
+ * Installs the target repo's dependencies before the agent starts, based on whichever
+ * manifest is present. Without this, run_tests (and the agent's own fix) would fail on a
+ * missing node_modules/vendor directory regardless of whether the fix itself is correct.
+ */
+export async function installDependencies(workspaceRoot: string): Promise<RunTestsResult> {
+  const has = (name: string) =>
+    fs
+      .access(path.join(workspaceRoot, name))
+      .then(() => true)
+      .catch(() => false);
+
+  let command: string | undefined;
+  if (await has("package-lock.json")) command = "npm ci";
+  else if (await has("package.json")) command = "npm install";
+  else if (await has("requirements.txt")) command = "pip install -r requirements.txt";
+  else if (await has("Cargo.toml")) command = "cargo fetch";
+  else if (await has("go.mod")) command = "go mod download";
+
+  if (!command) {
+    return { success: true, exitCode: 0, stdout: "No recognized dependency manifest found; skipping install.", stderr: "" };
+  }
+  return runShell(command, workspaceRoot, INSTALL_TIMEOUT_MS);
 }
