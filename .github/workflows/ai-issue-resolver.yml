@@ -1,0 +1,166 @@
+name: AI Issue Resolver
+
+# Only ever fires when an issue is freshly labeled, and only proceeds further
+# in the job `if:` guard below when that label is exactly `ai-resolve`.
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-resolve-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: github.event.label.name == 'ai-resolve'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Adding a label only requires "triage" access in many repos, but this job runs
+      # with a write-scoped token and executes arbitrary agent-driven code. Refuse to
+      # run unless whoever applied the label actually has write (or admin) access.
+      - name: Verify label author has write access
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          PERMISSION=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission)
+          echo "Label author '$SENDER' has permission: $PERMISSION"
+          if [[ "$PERMISSION" != "admin" && "$PERMISSION" != "write" ]]; then
+            echo "Refusing to run the autonomous agent for a non-writer."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "claude-resolver-bot"
+          git config user.email "claude-resolver-bot@users.noreply.github.com"
+
+      - name: Post start comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "🤖 Automated resolution in progress — Claude is investigating this issue."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # Swap this (and the run_tests step below) for your stack's install/test
+      # commands if this repo isn't Node.js, e.g. `pip install -r requirements.txt`
+      # / `pytest`, or `cargo build` / `cargo test`.
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Create fix branch
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: git checkout -b "fix/issue-$ISSUE_NUMBER"
+
+      - name: Write issue prompt for Claude
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: node .github/scripts/write-prompt.js
+
+      - name: Run Claude Code to implement the fix
+        id: run_claude
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat /tmp/prompt.md)" \
+            --model claude-sonnet-5 \
+            --dangerously-skip-permissions \
+            --output-format json \
+            | tee /tmp/claude-output.json
+
+      - name: Run test suite
+        id: run_tests
+        continue-on-error: true
+        run: npm test
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit fix
+        if: steps.changes.outputs.changed == 'true' && steps.run_tests.outcome == 'success'
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          git add -A
+          git commit -m "Fix #$ISSUE_NUMBER: $ISSUE_TITLE"
+
+      - name: Push branch
+        if: steps.changes.outputs.changed == 'true' && steps.run_tests.outcome == 'success'
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: git push origin "fix/issue-$ISSUE_NUMBER"
+
+      - name: Write PR body
+        if: steps.changes.outputs.changed == 'true' && steps.run_tests.outcome == 'success'
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: node .github/scripts/write-pr-body.js
+
+      - name: Open pull request
+        id: open_pr
+        if: steps.changes.outputs.changed == 'true' && steps.run_tests.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          PR_URL=$(gh pr create \
+            --title "Fix: $ISSUE_TITLE" \
+            --base "$DEFAULT_BRANCH" \
+            --head "fix/issue-$ISSUE_NUMBER" \
+            --body-file /tmp/pr-body.md)
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on issue with PR link
+        if: steps.open_pr.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ steps.open_pr.outputs.pr_url }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "✅ I opened a pull request with a fix: $PR_URL"
+
+      - name: Comment on issue about failure
+        if: steps.changes.outputs.changed != 'true' || steps.run_tests.outcome != 'success' || steps.open_pr.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "🤖 I was unable to automatically resolve this issue (no passing fix was produced, or PR creation failed). A maintainer will need to take a look manually."
