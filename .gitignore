@@ -3,3 +3,5 @@ dist/
 .env
 .workspaces/
 *.log
+.secrets/
+*.pem
